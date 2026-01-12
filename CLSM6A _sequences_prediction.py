@@ -673,17 +673,6 @@ def read_test_txt_to_ENAC(data_path):
     }
 
     nrows = len(seq)
-    if nrows == 0:
-        raise ValueError("输入文件里没有读到序列。请检查格式：>header 下一行是序列。")
-
-    # 简单校验：长度必须>=201；不足会导致后续取2-mer越界
-    for i, s in enumerate(seq):
-        if len(s) < 201:
-            raise ValueError(f"第{i+1}条序列长度不足201：len={len(s)}。请确保每条序列至少201nt。")
-        # 只允许A/C/G/U
-        bad = set(s) - set("ACGU")
-        if bad:
-            raise ValueError(f"第{i+1}条序列包含非法字符 {bad}。请清理或替换为ACGU。")
 
     all_ENAC = []
     for i in range(nrows):
@@ -698,9 +687,7 @@ def read_test_txt_to_ENAC(data_path):
     return seq_name, seq, np.array(all_ENAC, dtype=np.float32)
 
 
-# -----------------------
-# 用某个模型跑一遍，返回score数组 (N,)
-# -----------------------
+
 def predict_with_model(model, X_test, batch_size=32, device="cpu"):
     model.eval()
     X = torch.from_numpy(X_test).to(torch.float32).to(device)
@@ -716,32 +703,24 @@ def predict_with_model(model, X_test, batch_size=32, device="cpu"):
 
 
 def main_all_models(example_dir, jobid, models_dir, batch_size=32, device="cpu"):
-    # 1) 读入并编码
+
     in_file = os.path.join(example_dir, f"{jobid}.txt")
     seq_name, seq, X_test = read_test_txt_to_ENAC(in_file)
 
-    # 2) 逐模型预测
     model_list = ["A549", "CD8T", "HCT116", "HEK293", "HEK293T", "HeLa",
                   "HepG2", "MOLM13", "brain", "kidney", "liver"]
 
     scores = {}  # model_name -> (N,)
     for mname in model_list:
-        # 2.1 构建模型实例：要求你脚本里已经定义了 m_A549(), m_liver() 这类函数/类
         ctor_name = f"m_{mname}"
-        if ctor_name not in globals():
-            raise ValueError(f"找不到模型构造函数 {ctor_name}()。请确认该函数在脚本中已定义。")
 
-        model = globals()[ctor_name]()  # 等价于 exec('model = m_xxx()')，但更安全
+        model = globals()[ctor_name]()
         weight_path = os.path.join(models_dir, f"{mname}.pkl")
-        if not os.path.exists(weight_path):
-            raise FileNotFoundError(f"模型权重不存在：{weight_path}")
 
-        # 2.2 加载权重并预测
         model.load_state_dict(torch.load(weight_path, map_location="cpu"))
         model.to(device)
         scores[mname] = predict_with_model(model, X_test, batch_size=batch_size, device=device)
 
-    # 3) 汇总到一个表：每个模型一列 + 最大值/最大来源
     df = DataFrame({"Name": seq_name, "Sequence": seq})
     for mname in model_list:
         df[f"Score_{mname}"] = scores[mname]
@@ -750,18 +729,17 @@ def main_all_models(example_dir, jobid, models_dir, batch_size=32, device="cpu")
     df["MaxScore"] = df[score_cols].max(axis=1)
     df["MaxModel"] = df[score_cols].idxmax(axis=1).str.replace("Score_", "", regex=False)
 
-    # 4) 保存
     out_csv = os.path.join(example_dir, f"{jobid}_results_all_models.csv")
     df.to_csv(out_csv, index=False, encoding="gbk", float_format="%.6f")
     print("Saved:", out_csv)
 
 
 if __name__ == "__main__":
-    # 你的输入文件：example/01prediction.txt
+
     jobid = "01prediction"
     batch_size = 32
 
-    # 当前脚本所在目录（和你原来的 curPath 一样）
+
     curPath = os.path.dirname(os.path.realpath(__file__))
     example_dir = os.path.join(curPath, "example")
     models_dir = os.path.join(curPath, "models")
